@@ -32,7 +32,7 @@ jobs:
 
       - name: Build
         run: |
-          GOOS=${{ matrix.os }} GOARCH=amd64 go build -o "bin/your-app-name-${{ matrix.platform }}${{ matrix.ext }}" ./cmd/your-app
+          GOOS=${{ matrix.os }} GOARCH=amd64 go build -o "bin/manifest-${{ matrix.platform }}${{ matrix.ext }}" .
         env:
           CGO_ENABLED: 0
 
