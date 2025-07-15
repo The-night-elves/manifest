@@ -57,5 +57,7 @@ jobs:
         with:
           files: |
             bin/manifest-windows-amd64.exe
+          tag_name: ${{ github.ref_name }}  # 使用触发的 tag 名称
+          name: "Release ${{ github.ref_name }}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
