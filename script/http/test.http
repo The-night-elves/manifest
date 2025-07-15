@@ -1,0 +1,9 @@
+### GET request to example server
+GET https://steamui.com/api/loadGames.php?search=%E5%89%91%E6%98%9F
+
+### GET request to github
+GET https://api.github.com/repos/SteamAutoCracks/ManifestHub/branches/3489700
+
+
+### GET request to github
+GET https://api.github.com/repos/SteamAutoCracks/ManifestHub/git/trees/e6b2b13171d13244e2090a11c87dbda7dfb64a45
