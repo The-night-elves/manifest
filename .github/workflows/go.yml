@@ -18,11 +18,8 @@ jobs:
     strategy:
       matrix:
         go-version: [1.24.4]
-        os: [linux, windows]
+        os: [windows]
         include:
-          - os: linux
-            ext: ""
-            platform: "linux-amd64"
           - os: windows
             ext: ".exe"
             platform: "windows-amd64"
@@ -60,7 +57,6 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            bin/manifest-linux-amd64
             bin/manifest-windows-amd64.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
