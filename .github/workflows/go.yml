@@ -1,11 +1,13 @@
 # This workflow will build a golang project
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
 
-name: Go
+name: Go Build and Release
 
 on:
   push:
     branches: [ "main" ]
+    tags:
+      - 'v*'  # 添加标签触发条件
   pull_request:
     branches: [ "main" ]
 
@@ -33,5 +35,32 @@ jobs:
         go-version: ${{ matrix.go-version }}
 
     - name: Build
-      run: GOOS=${{ matrix.os }} GOARCH=amd64 go build -o "bin/manifest-${{ matrix.platform }}${{ matrix.ext }}" .
+      run: |
+        GOOS=${{ matrix.os }} GOARCH=amd64 go build -o "bin/manifest-${{ matrix.platform }}${{ matrix.ext }}" .
+        ls -lh bin/  # 调试：查看生成的文件
 
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: binaries
+        path: bin/
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')  # 仅在标签推送时运行
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: bin/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            bin/manifest-linux-amd64
+            bin/manifest-windows-amd64.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
