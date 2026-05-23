@@ -14,10 +14,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/andygrunwald/vdf"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
+	"resty.dev/v3"
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -33,6 +35,20 @@ var rootCmd = &cobra.Command{
 			slog.Error(err.Error())
 			return
 		}
+		flaresolverrEndpoin, err := cmd.Flags().GetString("flaresolverr")
+		if err != nil {
+			slog.Error(err.Error())
+			return
+		}
+		client := NewCFClient("steam_ui", flaresolverrEndpoin)
+		err = client.CreateSession()
+		if err != nil {
+			slog.Error(err.Error())
+			return
+		}
+		defer client.DestroySession()
+
+		logLevel = "debug"
 		switch logLevel {
 		case "debug":
 			slog.SetLogLoggerLevel(slog.LevelDebug)
@@ -52,8 +68,15 @@ var rootCmd = &cobra.Command{
 			slog.Error("input game name or AppID is empty")
 			return
 		}
-		gamesInfo := SearchGameAppResp{}
-		if err = gamesInfo.SearchGameAppIDByName(name); err != nil {
+
+		body, err := client.GetByName(name)
+		if err != nil {
+			slog.Error(err.Error())
+			return
+		}
+		slog.Debug("GetByName", slog.String("body", string(body)))
+		var gamesInfo SearchGameAppResp
+		if err = json.Unmarshal(body, &gamesInfo); err != nil {
 			slog.Error(err.Error())
 			return
 		}
@@ -90,35 +113,8 @@ func init() {
 	// Cobra also supports local flags, which will only run
 	// when this action is called directly.
 	rootCmd.Flags().StringP("log", "l", "info", "日志等级, debug, info, warn, error")
-}
-
-func (s *SearchGameAppResp) SearchGameAppIDByName(name string) error {
-	const Remote = "https://steamui.com/api/loadGames.php"
-	values := url.Values{}
-	values.Add("search", name)
-	encode := values.Encode()
-	remote := Remote + "?" + encode
-	spinner, err := pterm.DefaultSpinner.Start("Searching...")
-	if err != nil {
-		return err
-	}
-	defer spinner.Stop()
-	resp, err := http.Get(remote)
-	if err != nil {
-		return err
-	}
-	spinner.Success("done")
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
-	}
-	slog.Debug("SearchGameAppIDByName", slog.String("body", string(raw)), slog.String("url", remote))
-	if err = json.Unmarshal(raw, &s); err != nil {
-		return err
-	}
-
-	return nil
+	// flareSolverr url
+	rootCmd.Flags().StringP("flaresolverr", "f", "http://localhost:8191/v1", "flaresolverr server endpoint")
 }
 
 type SearchGameAppResp struct {
@@ -130,14 +126,14 @@ func (s *SearchGameAppResp) SelectApp() (*GameInfo, error) {
 		return nil, errors.New("game not found")
 	}
 	data := make(pterm.TableData, 1+len(s.Games))
-	data[0] = []string{"Index", "AppID", "GameName", "GameType", "SchineseName"}
+	data[0] = []string{"Index", "AppID", "GameName", "GameType", "NameSimpleChinese"}
 	for i, game := range s.Games {
 		data[i+1] = []string{
 			strconv.Itoa(i),
 			strconv.Itoa(game.AppID),
 			game.Name,
 			game.Type,
-			game.SchineseName,
+			game.NameSimpleChinese,
 		}
 	}
 	err := pterm.DefaultTable.WithHasHeader().WithData(data).Render()
@@ -159,13 +155,13 @@ func (s *SearchGameAppResp) SelectApp() (*GameInfo, error) {
 }
 
 type GameInfo struct {
-	AppID        int    `json:"appid"`
-	Name         string `json:"name"`
-	Type         string `json:"type"`
-	SchineseName string `json:"schinese_name"`
-	Isfreeapp    int    `json:"isfreeapp"`
-	UpdateTime   string `json:"update_time"`
-	ChangeNumber int    `json:"change_number"`
+	AppID             int    `json:"appid"`
+	Name              string `json:"name"`
+	Type              string `json:"type"`
+	NameSimpleChinese string `json:"name_schinese"`
+	IsFreeApp         bool   `json:"isfreeapp"`
+	UpdateTime        string `json:"update_time"`
+	ChangeNumber      int    `json:"change_number"`
 }
 
 // FindManifest find manifest
@@ -479,4 +475,125 @@ func (d *Depots) InitFromMapAny(src map[string]any) error {
 	}
 
 	return nil
+}
+
+type FSRequest struct {
+	Cmd        string `json:"cmd"`
+	URL        string `json:"url"`
+	MaxTimeout int    `json:"maxTimeout"`
+	Session    string `json:"session,omitempty"`
+}
+
+type FSCookie struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+type FSSolution struct {
+	Status    int        `json:"status"`
+	Body      string     `json:"response"`
+	Cookies   []FSCookie `json:"cookies"`
+	UserAgent string     `json:"userAgent"`
+}
+
+type FSResponse struct {
+	Status   string     `json:"status"`
+	Message  string     `json:"message"`
+	Solution FSSolution `json:"solution"`
+}
+
+func (m *FSResponse) GetJSONBody() ([]byte, error) {
+	if m == nil {
+		return nil, nil
+	}
+
+	left := strings.IndexByte(m.Solution.Body, '{')
+	if left < 0 {
+		return nil, errors.New("malformed response: missing JSON body")
+	}
+	right := strings.LastIndexByte(m.Solution.Body, '}')
+	if right < left {
+		return nil, errors.New("malformed response: missing JSON body")
+	}
+	return []byte(m.Solution.Body[left : right+1]), nil
+}
+
+type CFClient struct {
+	client  *resty.Client
+	session string
+}
+
+func NewCFClient(session, endpoint string) *CFClient {
+	return &CFClient{
+		client:  resty.New().SetTimeout(90 * time.Second).SetBaseURL(endpoint),
+		session: session, // pin session name，Flare Solverr It will reuse the same browser
+	}
+}
+
+func (c *CFClient) call(payload FSRequest) (*FSResponse, error) {
+	resp, err := c.client.R().
+		SetBody(payload).
+		SetContentType("application/json").
+		Post(c.client.BaseURL())
+	if err != nil {
+		return nil, err
+	}
+	slog.Debug("call",
+		slog.Any("payload", payload),
+		slog.String("raw", string(resp.Bytes())),
+	)
+	var result FSResponse
+	if resp.StatusCode() != http.StatusOK {
+		return nil, fmt.Errorf("FlareSolverr err: %s", result.Message)
+	}
+	err = json.Unmarshal(resp.Bytes(), &result)
+	if err != nil {
+		return nil, err
+	} else if result.Status != "ok" {
+		return nil, fmt.Errorf("FlareSolverr err: %s", result.Message)
+	}
+
+	return &result, nil
+}
+
+// GetByName All requests go through FlareSolver, no need for HTTP at all. Direct client connection
+func (c *CFClient) GetByName(name string) ([]byte, error) {
+	const Remote = "https://steamui.com/api/loadGames.php"
+	values := url.Values{}
+	values.Add("search", name)
+	encode := values.Encode()
+	remote := Remote + "?" + encode
+
+	slog.Debug("Get", slog.String("remote", remote))
+
+	spinner, err := pterm.DefaultSpinner.Start("Searching for " + name + "...")
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := c.call(FSRequest{
+		Cmd:        "request.get",
+		URL:        remote,
+		MaxTimeout: 60000,
+		Session:    c.session, // Reuse sessions, use those that have already passed the challenge directly, no need to revalidate
+	})
+	if err != nil {
+		spinner.Fail("Search failed: " + err.Error())
+		return nil, err
+	}
+
+	spinner.Success("Search completed")
+	return result.GetJSONBody()
+}
+
+// CreateSession reuse the same browser
+func (c *CFClient) CreateSession() error {
+	_, err := c.call(FSRequest{Cmd: "sessions.create", Session: c.session})
+	return err
+}
+
+// DestroySession close the browser
+func (c *CFClient) DestroySession() error {
+	_, err := c.call(FSRequest{Cmd: "sessions.destroy", Session: c.session})
+	return err
 }
